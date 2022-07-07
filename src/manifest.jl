@@ -83,6 +83,7 @@ struct Stage1
     uuid::UUID
     entry::PackageEntry
     deps::Union{Vector{String}, Dict{String,UUID}}
+    weakdeps::Union{Vector{String}, Dict{String,UUID}}
 end
 
 normalize_deps(name, uuid, deps, manifest) = deps
@@ -110,21 +111,28 @@ function validate_manifest(julia_version::Union{Nothing,VersionNumber}, manifest
     for (name, infos) in stage1, info in infos
         info.entry.deps = normalize_deps(name, info.uuid, info.deps, stage1)
     end
+    for (name, infos) in stage1, info in infos
+        info.entry.weakdeps = normalize_deps(name, info.uuid, info.weakdeps, stage1)
+    end
     # invariant: all dependencies are now normalized to Dict{String,UUID}
     deps = Dict{UUID, PackageEntry}()
     for (name, infos) in stage1, info in infos
         deps[info.uuid] = info.entry
     end
     # now just verify the graph structure
-    for (entry_uuid, entry) in deps, (name, uuid) in entry.deps
-        dep_entry = get(deps, uuid, nothing)
-        if dep_entry === nothing
-            pkgerror("`$(entry.name)=$(entry_uuid)` depends on `$name=$uuid`, ",
-                     "but no such entry exists in the manifest.")
-        end
-        if dep_entry.name != name
-            pkgerror("`$(entry.name)=$(entry_uuid)` depends on `$name=$uuid`, ",
-                     "but entry with UUID `$uuid` has name `$(dep_entry.name)`.")
+    for (entry_uuid, entry) in deps
+        for deptype in (entry.deps, entry.weakdeps)
+            for (name, uuid) in deptype
+                dep_entry = get(deps, uuid, nothing)
+                if dep_entry === nothing
+                    pkgerror("`$(entry.name)=$(entry_uuid)` depends on `$name=$uuid`, ",
+                            "but no such entry exists in the manifest.")
+                end
+                if dep_entry.name != name
+                    pkgerror("`$(entry.name)=$(entry_uuid)` depends on `$name=$uuid`, ",
+                            "but entry with UUID `$uuid` has name `$(dep_entry.name)`.")
+                end
+            end
         end
     end
     return Manifest(; julia_version, manifest_format, deps, other)
@@ -147,6 +155,7 @@ function Manifest(raw::Dict, f_or_io::Union{String, IO})::Manifest
             entry.name = name
             uuid = nothing
             deps = nothing
+            weakdeps = nothing
             try
                 entry.pinned      = read_pinned(get(info, "pinned", nothing))
                 uuid              = read_field("uuid",          nothing, info, safe_uuid)::UUID
@@ -158,13 +167,14 @@ function Manifest(raw::Dict, f_or_io::Union{String, IO})::Manifest
                 entry.tree_hash   = read_field("git-tree-sha1", nothing, info, safe_SHA1)
                 entry.uuid        = uuid
                 deps = read_deps(get(info::Dict, "deps", nothing))
+                weakdeps = read_deps(get(info::Dict, "weakdeps", nothing))
             catch
                 # TODO: Should probably not unconditionally log something
                 @debug "Could not parse manifest entry for `$name`" f_or_io
                 rethrow()
             end
             entry.other = info::Union{Dict,Nothing}
-            stage1[name] = push!(get(stage1, name, Stage1[]), Stage1(uuid, entry, deps))
+            stage1[name] = push!(get(stage1, name, Stage1[]), Stage1(uuid, entry, deps, weakdeps))
         end
         # by this point, all the fields of the `PackageEntry`s have been type casted
         # but we have *not* verified the _graph_ structure of the manifest
