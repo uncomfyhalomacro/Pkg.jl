@@ -86,17 +86,19 @@ struct Stage1
     weakdeps::Union{Vector{String}, Dict{String,UUID}}
 end
 
-normalize_deps(name, uuid, deps, manifest) = deps
-function normalize_deps(name, uuid, deps::Vector{String}, manifest::Dict{String,Vector{Stage1}})
+normalize_deps(name, uuid, deps, manifest; isweak=false) = deps
+function normalize_deps(name, uuid, deps::Vector{String}, manifest::Dict{String,Vector{Stage1}}; isweak=false)
     if length(deps) != length(unique(deps))
         pkgerror("Duplicate entry in `$name=$uuid`'s `deps` field.")
     end
     final = Dict{String,UUID}()
     for dep in deps
         infos = get(manifest, dep, nothing)
-        if infos === nothing
-            pkgerror("`$name=$uuid` depends on `$dep`, ",
-                     "but no such entry exists in the manifest.")
+        if !isweak
+            if infos === nothing
+                pkgerror("`$name=$uuid` depends on `$dep`, ",
+                        "but no such entry exists in the manifest.")
+            end
         end
         # should have used dict format instead of vector format
         length(infos) == 1 || pkgerror("Invalid manifest format. ",
@@ -112,7 +114,7 @@ function validate_manifest(julia_version::Union{Nothing,VersionNumber}, manifest
         info.entry.deps = normalize_deps(name, info.uuid, info.deps, stage1)
     end
     for (name, infos) in stage1, info in infos
-        info.entry.weakdeps = normalize_deps(name, info.uuid, info.weakdeps, stage1)
+        info.entry.weakdeps = normalize_deps(name, info.uuid, info.weakdeps, stage1; isweak=true)
     end
     # invariant: all dependencies are now normalized to Dict{String,UUID}
     deps = Dict{UUID, PackageEntry}()
@@ -121,16 +123,18 @@ function validate_manifest(julia_version::Union{Nothing,VersionNumber}, manifest
     end
     # now just verify the graph structure
     for (entry_uuid, entry) in deps
-        for deptype in (entry.deps, entry.weakdeps)
+        for (deptype, isweak) in [(entry.deps, false), (entry.weakdeps, true)]
             for (name, uuid) in deptype
                 dep_entry = get(deps, uuid, nothing)
-                if dep_entry === nothing
-                    pkgerror("`$(entry.name)=$(entry_uuid)` depends on `$name=$uuid`, ",
-                            "but no such entry exists in the manifest.")
-                end
-                if dep_entry.name != name
-                    pkgerror("`$(entry.name)=$(entry_uuid)` depends on `$name=$uuid`, ",
-                            "but entry with UUID `$uuid` has name `$(dep_entry.name)`.")
+                if !isweak
+                    if dep_entry === nothing
+                        pkgerror("`$(entry.name)=$(entry_uuid)` depends on `$name=$uuid`, ",
+                                "but no such entry exists in the manifest.")
+                    end
+                    if dep_entry.name != name
+                        pkgerror("`$(entry.name)=$(entry_uuid)` depends on `$name=$uuid`, ",
+                                "but entry with UUID `$uuid` has name `$(dep_entry.name)`.")
+                    end
                 end
             end
         end
@@ -267,15 +271,17 @@ function destructure(manifest::Manifest)::Dict
         entry!(new_entry, "repo-url", repo_source)
         entry!(new_entry, "repo-rev", entry.repo.rev)
         entry!(new_entry, "repo-subdir", entry.repo.subdir)
-        if isempty(entry.deps)
-            delete!(new_entry, "deps")
-        else
-            if all(dep -> unique_name[first(dep)], entry.deps)
-                new_entry["deps"] = sort(collect(keys(entry.deps)))
+        for (deptype, depname) in [(entry.deps, "deps"), (entry.weakdeps, "weakdeps")]
+            if isempty(deptype)
+                delete!(new_entry, depname)
             else
-                new_entry["deps"] = Dict{String,String}()
-                for (name, uuid) in entry.deps
-                    new_entry["deps"][name] = string(uuid)
+                if all(dep -> haskey(unique_name, first(dep)), deptype) && all(dep -> unique_name[first(dep)], deptype)
+                    new_entry[depname] = sort(collect(keys(deptype)))
+                else
+                    new_entry[depname] = Dict{String,String}()
+                    for (name, uuid) in deptype
+                        new_entry[depname][name] = string(uuid)
+                    end
                 end
             end
         end
