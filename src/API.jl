@@ -154,7 +154,7 @@ for f in (:develop, :add, :rm, :up, :pin, :free, :test, :build, :status)
             pkgs = deepcopy(pkgs) # don't mutate input
             foreach(pkg -> handle_package_input!(pkg), pkgs)
             ret = $f(ctx, pkgs; kwargs...)
-            $(f in (:add, :up, :pin, :free, :build)) && Pkg._auto_precompile(ctx)
+            $(f in (:add, :up, :pin, :free, :build)) && Pkg._auto_precompile(ctx) # rm does too, but it's handled differently
             $(f in (:up, :pin, :free, :rm)) && Pkg._auto_gc(ctx)
             return ret
         end
@@ -301,7 +301,35 @@ function rm(ctx::Context, pkgs::Vector{PackageSpec}; mode=PKGMODE_PROJECT, all_p
     ensure_resolved(ctx, ctx.env.manifest, pkgs)
 
     Operations.rm(ctx, pkgs; mode)
+
+    # After a `rm`, weak deps may have been removed and thus packages that were precompiled
+    # with them present will need re-precompiling, so precompile those.
+    # This autoprecomp is more targetted than after other pkg actions because `rm` is lighter-touch.
+    deps_that_may_need_re_precomp = identify_deps_with_demoted_deps(ctx)
+    Pkg._auto_precompile(ctx, deps_that_may_need_re_precomp, already_instantiated = true)
     return
+end
+
+# Identifies any deps that have weak deps that were strong, but removed from
+# the manifest in the previous pkg action.
+function identify_deps_with_demoted_deps(ctx::Context)
+    dep_list = String[]
+    new_uuids = keys(ctx.env.manifest)
+    old_uuids = keys(ctx.env.original_manifest)
+    for (uuid, pkgentry) in ctx.env.manifest.deps
+        (isnothing(pkgentry.weakdeps) || isempty(pkgentry.weakdeps)) && continue
+        weak_uuids = values(pkgentry.weakdeps)
+        old_num_promoted = count(in(old_uuids), weak_uuids)
+        new_num_promoted = count(in(new_uuids), weak_uuids)
+
+        # @show pkgentry pkgentry.weakdeps old_uuids new_uuids new_num_promoted old_num_promoted
+
+        if new_num_promoted < old_num_promoted
+            push!(dep_list, pkgentry.name)
+        end
+    end
+    # @show dep_list
+    return dep_list
 end
 
 function append_all_pkgs!(pkgs, ctx, mode)
@@ -1148,6 +1176,8 @@ function precompile(ctx::Context, pkgs::Vector{String}=String[]; internal_call::
         isempty(depsmap) && pkgerror("No direct dependencies found matching $(repr(pkgs))")
     end
 
+    target = string(isempty(pkgs) ? "project" : join(pkgs, ", "), "...")
+
     pkg_queue = Base.PkgId[]
     failed_deps = Dict{Base.PkgId, String}()
     skipped_deps = Base.PkgId[]
@@ -1189,7 +1219,7 @@ function precompile(ctx::Context, pkgs::Vector{String}=String[]; internal_call::
             wait(first_started)
             (isempty(pkg_queue) || interrupted_or_done.set) && return
             fancyprint && lock(print_lock) do
-                printpkgstyle(io, :Precompiling, "project...")
+                printpkgstyle(io, :Precompiling, target)
                 print(io, ansi_disablecursor)
             end
             t = Timer(0; interval=1/10)
@@ -1294,7 +1324,7 @@ function precompile(ctx::Context, pkgs::Vector{String}=String[]; internal_call::
                     iob = IOBuffer()
                     name = is_direct_dep ? pkg.name : string(color_string(pkg.name, :light_black))
                     !fancyprint && lock(print_lock) do
-                        isempty(pkg_queue) && printpkgstyle(io, :Precompiling, "project...")
+                        isempty(pkg_queue) && printpkgstyle(io, :Precompiling, target)
                     end
                     push!(pkg_queue, pkg)
                     started[pkg] = true
