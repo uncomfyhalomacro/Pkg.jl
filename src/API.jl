@@ -306,7 +306,9 @@ function rm(ctx::Context, pkgs::Vector{PackageSpec}; mode=PKGMODE_PROJECT, all_p
     # with them present will need re-precompiling, so precompile those.
     # This autoprecomp is more targetted than after other pkg actions because `rm` is lighter-touch.
     deps_that_may_need_re_precomp = identify_deps_with_demoted_deps(ctx)
-    Pkg._auto_precompile(ctx, deps_that_may_need_re_precomp, already_instantiated = true)
+    if !isempty(deps_that_may_need_re_precomp)
+        Pkg._auto_precompile(ctx, deps_that_may_need_re_precomp, already_instantiated = true)
+    end
     return
 end
 
