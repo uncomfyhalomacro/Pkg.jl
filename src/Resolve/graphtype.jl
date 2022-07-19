@@ -114,6 +114,7 @@ mutable struct GraphData
 
     function GraphData(
             compat::Dict{UUID,Dict{VersionNumber,Dict{UUID,VersionSpec}}},
+            weak_compat::Dict{UUID,Dict{VersionNumber,Dict{UUID,VersionSpec}}},
             uuid_to_name::Dict{UUID,String},
             verbose::Bool = false
         )
@@ -236,6 +237,7 @@ mutable struct Graph
 
     function Graph(
             compat::Dict{UUID,Dict{VersionNumber,Dict{UUID,VersionSpec}}},
+            weak_compat::Dict{UUID,Dict{VersionNumber,Dict{UUID,VersionSpec}}},
             uuid_to_name::Dict{UUID,String},
             reqs::Requires,
             fixed::Dict{UUID,Fixed},
@@ -252,9 +254,7 @@ mutable struct Graph
             compat[uuid_julia] = Dict{VersionNumber,Dict{UUID,VersionSpec}}()
         end
 
-        extra_uuids = union(collect(keys(reqs)), union(collect(keys(fixed)), map(fx->keys(fx.requires), values(fixed))...))
-
-        data = GraphData(compat, uuid_to_name, verbose)
+        data = GraphData(compat, weak_compat, uuid_to_name, verbose)
         pkgs, np, spp, pdict, pvers, vdict, rlog = data.pkgs, data.np, data.spp, data.pdict, data.pvers, data.vdict, data.rlog
 
         extended_deps = let spp = spp # Due to https://github.com/JuliaLang/julia/issues/15276
